@@ -27,6 +27,7 @@ Printer :: struct {
 	indentation_width:    int,
 	disabled_lines:       map[int]Disabled_Info,
 	disabled_until_line:  int,
+	lines_with_ignore:    [dynamic]Disabled_Info,
 	group_modes:          map[string]Document_Group_Mode,
 	force_statement_fit:  bool,
 	src:                  string,
@@ -129,15 +130,20 @@ build_disabled_lines_info :: proc(p: ^Printer) {
 	for group in p.comments {
 		for comment in group.list {
 			comment_text, _ := strings.replace_all(comment.text[:], " ", "", context.temp_allocator)
+			fmt_rule := strings.trim_prefix(comment_text, "//odinfmt:")
 
-			if strings.contains(comment_text, "//odinfmt:disable") {
+			switch {
+			case strings.compare(fmt_rule, "ignore") == 0:
+				append(&p.lines_with_ignore, Disabled_Info{start_line = comment.pos.line})
+
+			case strings.compare(fmt_rule, "disable") == 0:
 				found_disable = true
 				empty = true
 				disable_position = comment.pos
-			} else if strings.contains(comment_text, "//odinfmt:enable") && found_disable {
+
+			case strings.compare(fmt_rule, "enable") == 0 && found_disable:
 				begin := disable_position.offset - (comment.pos.column - 1)
 				end := comment.pos.offset + len(comment.text)
-
 				disabled_info := Disabled_Info {
 					start_line = disable_position.line,
 					end_line   = comment.pos.line,
@@ -181,6 +187,36 @@ print_expr :: proc(p: ^Printer, expr: ^ast.Expr) -> string {
 	return strings.to_string(p.string_builder)
 }
 
+
+@(private)
+traverse_ignoring_stmts :: proc(p: ^Printer, file: ^ast.File) {
+	for decl, i in file.decls {
+		decl := cast(^ast.Decl)decl
+
+		for &disabled in p.lines_with_ignore {
+			// try attach to next stmt
+			if disabled.start_line < decl.pos.line {
+				start_line := decl.pos.line
+				end_line := decl.end.line
+
+				offset_start := decl.pos.offset
+				offset_end := decl.end.offset - 1
+
+				disabled_info := Disabled_Info {
+					start_line = start_line,
+					end_line   = end_line,
+					text       = p.src[offset_start:offset_end],
+				}
+
+				p.disabled_lines[start_line] = disabled_info
+
+				ordered_remove(&p.lines_with_ignore, 0)
+				break
+			}
+		}
+	}
+}
+
 print_file :: proc(p: ^Printer, file: ^ast.File) -> string {
 	p.comments = file.comments
 	p.string_builder = strings.builder_make(0, len(file.src) * 2, p.allocator)
@@ -202,6 +238,7 @@ print_file :: proc(p: ^Printer, file: ^ast.File) -> string {
 	}
 
 	build_disabled_lines_info(p)
+	traverse_ignoring_stmts(p, file)
 
 	p.source_position.line = 1
 	p.source_position.column = 1
