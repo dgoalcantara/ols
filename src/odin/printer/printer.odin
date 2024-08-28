@@ -122,7 +122,7 @@ make_printer :: proc(config: Config, allocator := context.allocator) -> Printer 
 
 
 @(private)
-build_disabled_lines_info :: proc(p: ^Printer) {
+build_disabled_lines_info :: proc(p: ^Printer, file: ^ast.File) {
 	found_disable := false
 	disable_position: tokenizer.Pos
 	empty := true
@@ -159,6 +159,24 @@ build_disabled_lines_info :: proc(p: ^Printer) {
 			}
 		}
 		empty = false
+	}
+
+	/// odinfmt:disable only works if there is a matching enable.
+	// tldr: disable formating from comment to EOF
+	if found_disable {
+		last_stmt := file.decls[len(file.decls) - 1]
+		begin := disable_position.offset
+		end := len(p.src)
+		disabled_info := Disabled_Info {
+			start_line = disable_position.line,
+			end_line   = last_stmt.end.line,
+			text       = p.src[begin:end],
+			empty      = empty,
+		}
+
+		for line := disable_position.line; line <= last_stmt.end.line; line += 1 {
+			p.disabled_lines[line] = disabled_info
+		}
 	}
 }
 
@@ -237,7 +255,7 @@ print_file :: proc(p: ^Printer, file: ^ast.File) -> string {
 		p.newline = "\n"
 	}
 
-	build_disabled_lines_info(p)
+	build_disabled_lines_info(p, file)
 	traverse_ignoring_stmts(p, file)
 
 	p.source_position.line = 1
